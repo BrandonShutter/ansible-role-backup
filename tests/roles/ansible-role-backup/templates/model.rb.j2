@@ -1,0 +1,264 @@
+# encoding: utf-8
+# {{ ansible_managed }}
+
+##
+# $ backup perform -t {{ item.name }} [-c <path_to_configuration_file>]
+#
+Model.new(:{{ item.name }}, 'Backup model {{ item.name }}') do
+
+{% for model_db in item.databases %}
+{% for dbs in backup_databases %}
+{% if dbs.name == model_db %}
+{% if dbs.type == 'mysql' %}
+  ##
+  # MySQL [Database]
+  #
+  database MySQL, :{{ dbs.name }} do |db|
+    # To dump all databases, set `db.name = :all` (or leave blank)
+    db.name               = "{{ dbs.db }}"
+    db.username           = "{{ dbs.username }}"
+{% if dbs.password is defined %}    db.password           = "{{ dbs.password }}"{% endif %}
+    db.host               = "{{ dbs.host|default('127.0.0.1') }}"
+    db.port               = {{ dbs.port|default(3306) }}
+{% if dbs.socket is defined %}    db.socket             = "{{ dbs.socket }}"{% endif %}
+    # Note: when using `skip_tables` with the `db.name = :all` option,
+    # table names should be prefixed with a database name.
+    # e.g. ["db_name.table_to_skip", ...]
+    db.skip_tables        = []
+    db.only_tables        = []
+    db.additional_options = []
+  end
+{% endif %}
+{% if dbs.type == 'postgresql' %}
+  ##
+  # PostgreSQL [Database]
+  #
+  database PostgreSQL, :{{ dbs.name }} do |db|
+    # To dump all databases, set `db.name = :all` (or leave blank)
+    db.name               = "{{ dbs.db }}"
+    db.username           = "{{ dbs.username|default('postgres') }}"
+{% if dbs.password is defined %}    db.password           = "{{ dbs.password }}"{% endif %}
+    db.host               = "{{ dbs.host|default('127.0.0.1') }}"
+    db.port               = {{ dbs.port|default(5432) }}
+{% if dbs.socket is defined %}    db.socket             = "{{ dbs.socket }}"{% endif %}
+    # When dumping all databases, `skip_tables` and `only_tables` are ignored.
+    db.skip_tables        = []
+    db.only_tables        = []
+    db.additional_options = []
+  end
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+{% for model_stor in item.storages %}
+{% for stor in backup_storages %}
+{% if stor.name == model_stor %}
+{% if stor.type == 'dropbox' %}
+  ##
+  # Dropbox [Storage]
+  #
+  # Your initial backup must be performed manually to authorize
+  # this machine with your Dropbox account. This authorized session
+  # will be stored in `cache_path` and used for subsequent backups.
+  #
+  store_with Dropbox do |db|
+    db.api_key     = "{{ stor.api_key }}"
+    db.api_secret  = "{{ stor.api_secret }}"
+    # Sets the path where the cached authorized session will be stored.
+    # Relative paths will be relative to ~/Backup, unless the --root-path
+    # is set on the command line or within your configuration file.
+    db.cache_path  = ".cache"
+    # :app_folder (default) or :dropbox
+    db.access_type = :app_folder
+    db.path        = "{{ stor.path }}"
+    db.keep        = {{ stor.keep|default(14) }}
+    # db.keep        = Time.now - 2592000 # Remove all backups older than 1 month.
+  end
+{% endif %}
+{% if stor.type == 's3' %}
+  ##
+  # Amazon Simple Storage Service [Storage]
+  #
+  store_with S3 do |s3|
+    # AWS Credentials
+    s3.access_key_id     = "{{ stor.access_key }}"
+    s3.secret_access_key = "{{ stor.secret_access_key }}"
+    # Or, to use a IAM Profile:
+    # s3.use_iam_profile = true
+
+    s3.region            = "{{ stor.region|default('us-east-1') }}"
+    s3.bucket            = "{{ stor.bucket }}"
+    s3.path              = "{{ stor.path|default('') }}"
+    s3.keep              = {{ stor.keep|default(14) }}
+    # s3.keep              = Time.now - 2592000 # Remove all backups older than 1 month.
+  end
+{% endif %}
+{% if stor.type == 'scp' %}
+  ##
+  # SCP (Secure Copy) [Storage]
+  #
+  store_with SCP do |server|
+    server.username   = "{{ stor.username }}"
+    server.password   = "{{ stor.password }}"
+    server.ip         = "{{ stor.ip }}"
+    server.port       = "{{ stor.port|default(22) }}"
+    server.path       = "{{ stor.path }}"
+    server.keep       = {{ stor.keep|default(14) }}
+    # server.keep       = Time.now - 2592000 # Remove all backups older than 1 month.
+
+    # Additional options for the SSH connection.
+    # server.ssh_options = {}
+  end
+{% endif %}
+{% if stor.type == 'local' %}
+  ##
+  # Local (Copy) [Storage]
+  #
+  store_with Local do |local|
+    local.path       = "{{ stor.path }}"
+    local.keep       = {{ stor.keep|default(14) }}
+    # local.keep       = Time.now - 2592000 # Remove all backups older than 1 month.
+  end
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+
+{% if backup_encryptors %}
+  ##
+  # OpenSSL [Encryptor]
+  #
+  encrypt_with OpenSSL do |encryption|
+{% if backup_encryptors.password is defined %}
+    encryption.password      = "{{ backup_encryptors.password }}"
+{% else %}
+    encryption.password_file = "{{ backup_encryptors.password_file }}"
+{% endif %}
+    encryption.base64        = true
+    encryption.salt          = true
+  end
+{% endif %}
+
+{% if backup_compressors %}
+{% if backup_compressors.type == 'gzip' %}
+  ##
+  # Gzip [Compressor]
+  #
+  compress_with Gzip do |compression|
+    compression.level = {{ backup_compressors.level | default(6) }}
+    compression.rsyncable = true
+  end
+{% endif %}
+{% if backup_compressors.type == 'bzip2' %}
+  ##
+  # Bzip2 [Compressor]
+  #
+  compress_with Bzip2 do |compression|
+    compression.level = {{ backup_compressors.level | default(9) }}
+  end
+{% endif %}
+{% endif %}
+
+{% for model_notify in item.notifiers %}
+{% for notty in backup_notifiers %}
+{% if notty.name == model_notify %}
+{% if notty.type == 'mail' %}
+  ##
+  # Mail [Notifier]
+  #
+  notify_by Mail do |mail|
+    mail.on_success           = {{ notty.on_success|default('true') }}
+    mail.on_warning           = {{ notty.on_warning|default('true') }}
+    mail.on_failure           = {{ notty.on_failure|default('true') }}
+
+    mail.from                 = "{{ notty.from }}"
+    mail.to                   = "{{ notty.to }}"
+{% if notty.cc is defined %}    mail.cc                   = "{{ notty.cc }}"{% endif %}
+{% if notty.bcc is defined %}    mail.bcc                  = "{{ notty.bcc }}"{% endif %}
+{% if notty.reply_to is defined %}    mail.reply_to             = "{{ notty.reply_to }}"{% endif %}
+    mail.address              = "{{ notty.address }}"
+    mail.port                 = {{ notty.port|default(587) }}
+    mail.domain               = "{{ notty.domain }}"
+    mail.user_name            = "{{ notty.username }}"
+    mail.password             = "{{ notty.password }}"
+    mail.authentication       = "{{ notty.authentication|default('plain') }}"
+    mail.encryption           = {{ notty.encryption|default(':starttls') }}
+  end
+{% endif %}
+{% if notty.type == 'http_post' %}
+  ##
+  # HttpPost [Notifier]
+  #
+  notify_by HttpPost do |post|
+    post.on_success = {{ notty.on_success|default('true') }}
+    post.on_warning = {{ notty.on_success|default('true') }}
+    post.on_failure = {{ notty.on_success|default('true') }}
+
+    # URI to post the notification to.
+    # Port may be specified if needed.
+    # If Basic Authentication is required, supply user:pass.
+    post.uri = '{{ notty.uri }}'
+
+    ##
+    # Optional
+    #
+    # Additional headers to send.
+    # post.headers = { 'Authentication' => 'my_auth_info' }
+    #
+    # Additional form params to post.
+    # post.params = { 'auth_token' => 'my_token' }
+    #
+    # Successful response codes. Default: 200
+    # post.success_codes = [200, 201, 204]
+    #
+    # Defaults to true on most systems.
+    # Force with +true+, disable with +false+
+    # post.ssl_verify_peer = false
+    #
+    # Supplied by default. Override with a custom 'cacert.pem' file.
+    # post.ssl_ca_file = '/my/cacert.pem'
+  end
+{% endif %}
+{% if notty.type == 'slack' %}
+  ##
+  # Slack [Notifier]
+  #
+  notify_by Slack do |slack|
+    slack.on_success = {{ notty.on_success|default('true') }}
+    slack.on_warning = {{ notty.on_success|default('true') }}
+    slack.on_failure = {{ notty.on_success|default('true') }}
+
+    # The incoming webhook url
+    # https://hooks.slack.com/services/xxxxxxxx/xxxxxxxxx/xxxxxxxxxx
+    slack.webhook_url = '{{ notty.url }}'
+
+    ##
+    # Optional
+    #
+    # The channel to which messages will be sent
+{% if notty.channel is defined %}
+    slack.channel = '{{ notty.channel }}'
+{% endif %}
+    #
+    # The username to display along with the notification
+{% if notty.username is defined %}
+    slack.username = '{{ notty.username }}'
+{% endif %}
+  end
+{% endif %}
+{% if notty.type == 'command' %}
+  notify_by Command do |cmd|
+    cmd.on_success = {{ notty.on_success|default('true') }}
+    cmd.on_warning = {{ notty.on_warning|default('true') }}
+    cmd.on_failure = {{ notty.on_failure|default('true') }}
+
+    cmd.command = '{{ notty.cmd }}'
+
+    cmd.args = {{ notty.args|default('["Backup %l", "%v"]') }}
+  end
+{% endif %}
+{% endif %}
+{% endfor %}
+{% endfor %}
+end
